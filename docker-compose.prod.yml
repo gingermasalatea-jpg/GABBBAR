@@ -1,0 +1,53 @@
+# Production stack: docker compose -f docker-compose.prod.yml --env-file .env up -d --build
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-wadesk}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-wadesk}
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-wadesk}"], interval: 5s, retries: 10 }
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes: [redisdata:/data]
+
+  api:
+    build: ./server
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      RUN_WORKERS: "false"
+      DATABASE_URL: postgres://${POSTGRES_USER:-wadesk}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-wadesk}
+      REDIS_URL: redis://redis:6379
+      TRUST_PROXY: "1"
+    volumes: [media:/data/media]
+    depends_on: { postgres: { condition: service_healthy }, redis: { condition: service_started } }
+    ports: ["127.0.0.1:4000:4000"]
+
+  worker:
+    build: ./server
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      RUN_HTTP: "false"
+      RUN_WORKERS: "true"
+      DATABASE_URL: postgres://${POSTGRES_USER:-wadesk}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-wadesk}
+      REDIS_URL: redis://redis:6379
+    volumes: [media:/data/media]
+    depends_on: { postgres: { condition: service_healthy }, redis: { condition: service_started } }
+
+  web:
+    build: { context: ./web, args: { API_INTERNAL_URL: "http://api:4000" } }
+    restart: unless-stopped
+    environment: { API_INTERNAL_URL: "http://api:4000" }
+    depends_on: [api]
+    ports: ["127.0.0.1:3000:3000"]
+
+volumes: { pgdata: {}, redisdata: {}, media: {} }
